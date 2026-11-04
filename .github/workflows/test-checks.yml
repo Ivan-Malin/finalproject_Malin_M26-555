@@ -41,7 +41,7 @@ jobs:
     - name: Lint with ruff base task rules
       run: |
         # Run the strictest ruff checks possible to satisfy EVERYTHING
-        uv run ruff check --select ALL --ignore T201,CPY001,RUF001,RUF002,RUF003,PTH107,PTH120,PTH123,PTH103,ARG001,ANN401,BLE001,C901,PLR0912,PLR0915 ./src
+        uv run ruff check --select ALL --ignore T201,CPY001,RUF001,RUF002,RUF003,PTH107,PTH120,PTH123,PTH103,ARG001,ANN401,BLE001,C901,PLR0912,PLR0915 ./valutatrade_hub
         # Also run non-strict checks for the tests
         uv run ruff check ./tests
   
@@ -89,4 +89,4 @@ jobs:
         source .venv/bin/activate
         uv tool install dist/*.whl
         # Test if project is in the system
-        which valutatrade_hub
+        which valutatrade-hub
