@@ -1,10 +1,10 @@
 """Тесты для модели User."""
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from valutatrade_hub.core.models import User
+from valutatrade_hub.core.models import User, Wallet
 
 
 # Фикстура для создания валидного пользователя
@@ -16,8 +16,14 @@ def valid_user():
         username="test_user",
         hashed_password="fake_hash",
         salt="fake_salt",
-        registration_date=datetime(2025, 1, 1, 12, 0, 0),
+        registration_date=datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
     )
+
+
+@pytest.fixture
+def valid_wallet():
+    """Создает валидный кошелёк для тестов."""
+    return Wallet(currency_code="USD", balance=100.50)
 
 
 class TestUserInitialization:
@@ -103,20 +109,20 @@ class TestPasswordManagement:
 class TestUsernameManagement:
     """Тесты управления именем пользователя."""
 
-    def test_change_username_success(self, valid_user):
+    def test_username_success(self, valid_user):
         """Проверка успешной смены имени."""
-        valid_user.change_username = "new_name"
+        valid_user.username = "new_name"
         assert valid_user.username == "new_name"
 
-    def test_change_username_empty(self, valid_user):
+    def test_username_empty(self, valid_user):
         """Проверка ошибки при пустом имени."""
-        with pytest.raises(ValueError, match="Имя не может быть пустым"):
-            valid_user.change_username = ""
+        with pytest.raises(ValueError, match="Имя.*пустым"):
+            valid_user.username = ""
 
-    def test_change_username_invalid_type(self, valid_user):
+    def test_username_invalid_type(self, valid_user):
         """Проверка ошибки при неверном типе имени."""
         with pytest.raises(TypeError, match="name должен быть str"):
-            valid_user.change_username = 123
+            valid_user.username = 123
 
 
 class TestSerialization:
@@ -128,9 +134,8 @@ class TestSerialization:
         assert isinstance(data, dict)
         assert data["user_id"] == 1
         assert data["username"] == "test_user"
-        assert "hashed_password" in data
-        assert "salt" in data
-        assert "registration_date" in data
+        # Проверяем наличие явного UTC
+        assert data["registration_date"].endswith("+0000")
 
     def test_from_dict_success(self):
         """Проверка успешного создания из словаря."""
@@ -139,11 +144,14 @@ class TestSerialization:
             "username": "json_user",
             "hashed_password": "h1",
             "salt": "s1",
-            "registration_date": "2025-10-09T12:00:00",
+            # ВАЖНО: Входная строка теперь должна содержать +0000
+            "registration_date": "2025-10-09T12:00:00+0000",
         }
         user = User.from_dict(data)
         assert user.user_id == 10
         assert user.username == "json_user"
+        # Проверяем, что объект стал aware
+        assert user.registration_date.tzinfo is not None
 
     def test_from_dict_invalid_type(self):
         """Проверка ошибки при передаче не словаря."""
@@ -189,36 +197,27 @@ class TestUserInfo:
 
 
 class TestTimezoneHandling:
-    """Тесты обработки часовых поясов (наивные даты считаются локальными и переводятся в UTC)."""
+    """Тесты обработки часовых поясов (строгий UTC с суффиксом)."""
 
-    def test_export_naive_datetime_converts_to_utc(self):
-        """Проверка, что наивная дата конвертируется из локального TZ в UTC."""
-        # Допустим, мы в UTC+3. Если мы создадим дату 15:30 без TZ, 
-        # система посчитает это 15:30 по местному времени и переведет в 12:30 UTC.
-        local_tz = timezone(timedelta(hours=3))
+    def test_export_naive_datetime_as_utc(self):
+        """Проверка, что наивная дата считается UTC и экспортируется с суффиксом."""
         naive_dt = datetime(2025, 5, 20, 15, 30, 0)
-        
-        # Чтобы тест был честным, мы эмулируем поведение: создаем aware объект в локальном TZ
-        # и передаем его. Или полагаемся на то, что Python сам подставит системный TZ.
-        # Для надежности теста явно укажем, что это время было "местным":
         user = User(
             user_id=1,
             username="tz_test",
             hashed_password="h",
             salt="s",
-            registration_date=naive_dt, # Система сама сделает astimezone(utc)
+            registration_date=naive_dt,
         )
-        
         info = user.get_user_info()
-        # Ожидаем сдвиг на -3 часа (из 15:30 в 12:30)
-        assert info["registration_date"] == "2025-05-20T12:30:00"
+        # Время не сдвигается, просто добавляется метка +0000
+        assert info["registration_date"] == "2025-05-20T15:30:00+0000"
 
     def test_export_aware_non_utc_converts_to_utc_string(self):
         """Проверка конвертации времени из другого TZ в UTC строку."""
-        # 18:30 в Москве (+3) = 15:30 UTC
         moscow_tz = timezone(timedelta(hours=3))
         local_time = datetime(2025, 5, 20, 18, 30, 0, tzinfo=moscow_tz)
-        
+
         user = User(
             user_id=2,
             username="tz_msk",
@@ -226,35 +225,32 @@ class TestTimezoneHandling:
             salt="s",
             registration_date=local_time,
         )
-        
-        info = user.get_user_info()
-        # В строке должно быть 15:30 UTC
-        assert info["registration_date"] == "2025-05-20T15:30:00"
 
-    def test_import_string_becomes_aware_utc_with_system_offset(self):
-        """Проверка импорта строки: система считает её локальным временем и переводит в UTC."""
+        info = user.get_user_info()
+        # 18:30 MSK = 15:30 UTC
+        assert info["registration_date"] == "2025-05-20T15:30:00+0000"
+
+    def test_import_string_becomes_aware_utc(self):
+        """Проверка, что при импорте строки с +0000 объект становится aware UTC."""
         data = {
             "user_id": 3,
             "username": "import_test",
             "hashed_password": "h",
             "salt": "s",
-            "registration_date": "2025-06-15T12:00:00",
+            "registration_date": "2025-06-15T12:00:00+0000",
         }
         user = User.from_dict(data)
-        
-        # Если система в UTC+3, то 12:00 "местных" превратятся в 09:00 UTC
-        assert user.registration_date.hour == 9
-        assert user.registration_date.minute == 0
-        # Объект должен стать осознанным и в UTC
+
+        # Время остается 12:00, так как в строке явно указан UTC
+        assert user.registration_date.hour == 12
         assert user.registration_date.tzinfo is not None
         assert user.registration_date.utcoffset() == timedelta(0)
 
     def test_round_trip_timezone_normalization(self):
         """Проверка полного цикла: любое TZ -> экспорт -> импорт -> результат в UTC."""
-        # 20:00 в Нью-Йорке (-5) = 01:00 следующего дня UTC
         ny_tz = timezone(timedelta(hours=-5))
         original_dt = datetime(2025, 12, 31, 20, 0, 0, tzinfo=ny_tz)
-        
+
         user1 = User(
             user_id=5,
             username="round_trip",
@@ -262,36 +258,285 @@ class TestTimezoneHandling:
             salt="s",
             registration_date=original_dt,
         )
-        
-        # Экспорт в словарь (JSON)
+
         data = user1.to_dict()
-        # Проверка, что в словаре строка соответствует UTC времени (01:00)
-        assert data["registration_date"] == "2026-01-01T01:00:00"
-        
-        # Импорт обратно
+        # Проверка, что в словаре строка соответствует UTC времени
+        # (01:00 следующего дня)
+        assert data["registration_date"] == "2026-01-01T01:00:00+0000"
+
         user2 = User.from_dict(data)
-        
-        # ВАЖНО: При импорте строки "2026-01-01T01:00:00" система снова считает её ЛОКАЛЬНЫМ временем.
-        # Если мы в UTC+3, то 01:00 "местных" превратятся в 22:00 UTC предыдущего дня.
-        # Это показывает, что round-trip для строк без TZ не сохраняет абсолютное время, 
-        # если система использует astimezone для наивных дат.
-        
-        # Проверяем фактическое поведение вашей системы (ошибка показала 22:00):
-        assert user2.registration_date.hour == 22
-        assert user2.registration_date.day == 31
-        assert user2.registration_date.month == 12
+
+        # Проверка внутреннего состояния: время должно остаться 01:00 UTC
+        assert user2.registration_date.hour == 1
+        assert user2.registration_date.day == 1
+        assert user2.registration_date.month == 1
         assert user2.registration_date.utcoffset() == timedelta(0)
 
-    def test_get_user_info_format_matches_constant(self, valid_user):
-        """Проверка, что формат даты в get_user_info точно совпадает с константой."""
-        info = valid_user.get_user_info()
-        date_str = info["registration_date"]
-        
-        # Проверяем обратное преобразование через ту же константу
-        parsed_date = datetime.strptime(date_str, User._User__DATE_TIME_FORMAT)
-        
-        # Убеждаемся, что данные не потерялись
-        assert parsed_date.year == valid_user.registration_date.year
-        assert parsed_date.month == valid_user.registration_date.month
-        assert parsed_date.day == valid_user.registration_date.day
-        assert parsed_date.hour == valid_user.registration_date.hour
+
+class TestWalletInitialization:
+    """Тесты инициализации кошелька."""
+
+    def test_create_wallet_default_balance(self):
+        """Проверка создания кошелька с балансом по умолчанию."""
+        wallet = Wallet(currency_code="USD")
+        assert wallet.currency_code == "USD"
+        assert wallet.balance == 0.0
+
+    def test_create_wallet_with_balance(self):
+        """Проверка создания кошелька с заданным балансом."""
+        wallet = Wallet(currency_code="BTC", balance=1.5)
+        assert wallet.currency_code == "BTC"
+        assert wallet.balance == 1.5
+
+    def test_invalid_currency_code_type(self):
+        """Проверка ошибки при неверном типе кода валюты."""
+        with pytest.raises(TypeError):
+            Wallet(currency_code=123)
+
+    def test_invalid_balance_type(self):
+        """Проверка ошибки при неверном типе баланса."""
+        with pytest.raises(TypeError):
+            Wallet(currency_code="USD", balance="100")
+
+
+class TestWalletBalanceProperty:
+    """Тесты свойства balance (геттер и сеттер)."""
+
+    def test_get_balance(self):
+        """Проверка получения баланса."""
+        wallet = Wallet(currency_code="EUR", balance=500.0)
+        assert wallet.balance == 500.0
+
+    def test_set_balance_valid(self):
+        """Проверка установки корректного положительного баланса."""
+        wallet = Wallet(currency_code="EUR")
+        wallet.balance = 100.0
+        assert wallet.balance == 100.0
+
+    def test_set_balance_zero(self):
+        """Проверка установки баланса в ноль."""
+        wallet = Wallet(currency_code="EUR", balance=10.0)
+        wallet.balance = 0.0
+        assert wallet.balance == 0.0
+
+    def test_set_balance_negative_raises_error(self):
+        """Проверка ошибки при установке отрицательного баланса."""
+        wallet = Wallet(currency_code="EUR")
+        with pytest.raises(ValueError, match="balance.*отрицат.*"):
+            wallet.balance = -10.0
+
+    def test_set_balance_invalid_type_raises_error(self):
+        """Проверка ошибки при установке баланса неверного типа."""
+        wallet = Wallet(currency_code="EUR")
+        with pytest.raises(TypeError):
+            wallet.balance = "100"
+
+
+class TestWalletDeposit:
+    """Тесты метода deposit."""
+
+    def test_deposit_positive_amount(self):
+        """Проверка пополнения на положительную сумму."""
+        wallet = Wallet(currency_code="USD", balance=100.0)
+        wallet.deposit(50.0)
+        assert wallet.balance == 150.0
+
+    def test_deposit_zero_amount(self):
+        """Проверка пополнения на ноль (баланс не меняется)."""
+        wallet = Wallet(currency_code="USD", balance=100.0)
+        wallet.deposit(0.0)
+        assert wallet.balance == 100.0
+
+    def test_deposit_negative_amount_raises_error(self):
+        """Проверка ошибки при попытке пополнить на отрицательную сумму."""
+        wallet = Wallet(currency_code="USD")
+        with pytest.raises(ValueError, match="amount.*отрицат.*"):
+            wallet.deposit(-10.0)
+
+    def test_deposit_invalid_type_raises_error(self):
+        """Проверка ошибки при передаче неверного типа суммы."""
+        wallet = Wallet(currency_code="USD")
+        with pytest.raises(TypeError):
+            wallet.deposit("50")
+
+
+class TestWalletWithdraw:
+    """Тесты метода withdraw."""
+
+    def test_withdraw_within_balance(self):
+        """Проверка снятия суммы, не превышающей баланс."""
+        wallet = Wallet(currency_code="USD", balance=100.0)
+        wallet.withdraw(30.0)
+        assert wallet.balance == 70.0
+
+    def test_withdraw_full_balance(self):
+        """Проверка снятия всего баланса."""
+        wallet = Wallet(currency_code="USD", balance=100.0)
+        wallet.withdraw(100.0)
+        assert wallet.balance == 0.0
+
+    def test_withdraw_exceeds_balance_raises_error(self):
+        """Проверка ошибки при снятии суммы больше баланса."""
+        wallet = Wallet(currency_code="USD", balance=50.0)
+        # Ожидается ValueError из-за проверки в сеттере balance
+        # (balance -= amount станет < 0)
+        with pytest.raises(ValueError, match="balance.*отрицат.*"):
+            wallet.withdraw(60.0)
+
+    def test_withdraw_negative_amount_raises_error(self):
+        """Проверка ошибки при попытке снять отрицательную сумму."""
+        wallet = Wallet(currency_code="USD", balance=100.0)
+        with pytest.raises(ValueError, match="amount.*отрицат.*"):
+            wallet.withdraw(-10.0)
+
+    def test_withdraw_invalid_type_raises_error(self):
+        """Проверка ошибки при передаче неверного типа суммы."""
+        wallet = Wallet(currency_code="USD")
+        with pytest.raises(TypeError):
+            wallet.withdraw("10")
+
+
+class TestWalletInfo:
+    """Тесты метода get_balance_info."""
+
+    def test_get_balance_info_structure(self):
+        """Проверка структуры возвращаемого словаря."""
+        wallet = Wallet(currency_code="BTC", balance=0.5)
+        info = wallet.get_balance_info()
+
+        assert isinstance(info, dict)
+        assert "currency_code" in info
+        assert "balance" in info
+        assert info["currency_code"] == "BTC"
+        assert info["balance"] == 0.5
+
+    def test_get_balance_info_after_operations(self):
+        """Проверка актуальности информации после операций."""
+        wallet = Wallet(currency_code="USD", balance=100.0)
+        wallet.deposit(50.0)
+        wallet.withdraw(20.0)
+
+        info = wallet.get_balance_info()
+        assert info["balance"] == 130.0
+
+
+class TestUserSerialization:
+    """Расширенные тесты сериализации User."""
+
+    def test_to_dict_structure(self, valid_user):
+        """Проверка структуры словаря при экспорте."""
+        data = valid_user.to_dict()
+        required_keys = {
+            "user_id",
+            "username",
+            "registration_date",
+            "hashed_password",
+            "salt",
+        }
+        assert required_keys.issubset(data.keys())
+
+    def test_to_dict_date_format(self, valid_user):
+        """Проверка формата даты в экспортируемом словаре."""
+        data = valid_user.to_dict()
+        # Теперь ожидаем суффикс +0000
+        assert data["registration_date"] == "2025-01-01T12:00:00+0000"
+
+    def test_round_trip_serialization(self, valid_user):
+        """Проверка полного цикла: объект -> dict -> объект."""
+        original_data = valid_user.to_dict()
+        restored_user = User.from_dict(original_data)
+
+        assert restored_user.user_id == valid_user.user_id
+        assert restored_user.username == valid_user.username
+        # Сравниваем datetime объекты (они оба теперь aware UTC)
+        assert restored_user.registration_date == valid_user.registration_date
+
+
+# ---------------------------------------------------------------------------
+# Тесты Wallet: Базовая логика
+# ---------------------------------------------------------------------------
+
+
+class TestWalletLogic:
+    """Тесты логики кошелька."""
+
+    def test_deposit_success(self, valid_wallet):
+        """Проверка пополнения."""
+        valid_wallet.deposit(50.0)
+        assert valid_wallet.balance == 150.50
+
+    def test_withdraw_success(self, valid_wallet):
+        """Проверка снятия."""
+        valid_wallet.withdraw(50.0)
+        assert valid_wallet.balance == 50.50
+
+    def test_withdraw_insufficient_funds(self, valid_wallet):
+        """Проверка снятия больше баланса."""
+        with pytest.raises(ValueError, match="balance.*отрицат.*"):
+            valid_wallet.withdraw(200.0)
+
+    def test_negative_balance_setter(self, valid_wallet):
+        """Проверка запрета отрицательного баланса через сеттер."""
+        with pytest.raises(ValueError, match="balance.*отрицат.*"):
+            valid_wallet.balance = -10.0
+
+
+# ---------------------------------------------------------------------------
+# Тесты Wallet: Сериализация и Десериализация (Dict/JSON)
+# ---------------------------------------------------------------------------
+
+
+class TestWalletSerialization:
+    """Тесты сериализации Wallet."""
+
+    def test_to_dict_structure(self, valid_wallet):
+        """Проверка структуры словаря при экспорте."""
+        data = valid_wallet.to_dict()
+        assert "currency_code" in data
+        assert "balance" in data
+        assert data["currency_code"] == "USD"
+        assert data["balance"] == 100.50
+
+    def test_to_dict_zero_balance(self):
+        """Проверка экспорта кошелька с нулевым балансом."""
+        wallet = Wallet(currency_code="BTC")
+        data = wallet.to_dict()
+        assert data["balance"] == 0.0
+
+    def test_from_dict_success(self):
+        """Проверка успешного создания из словаря."""
+        data = {"currency_code": "EUR", "balance": 250.75}
+        wallet = Wallet.from_dict(data)
+        assert wallet.currency_code == "EUR"
+        assert wallet.balance == 250.75
+
+    def test_round_trip_serialization(self, valid_wallet):
+        """Проверка полного цикла: объект -> dict -> объект."""
+        original_data = valid_wallet.to_dict()
+        restored_wallet = Wallet.from_dict(original_data)
+
+        assert restored_wallet.currency_code == valid_wallet.currency_code
+        assert restored_wallet.balance == valid_wallet.balance
+
+    def test_from_dict_missing_keys(self):
+        """Проверка ошибки при отсутствии ключей."""
+        data = {"currency_code": "USD"}
+        with pytest.raises(ValueError, match="wallet_dict имеет некорректный формат"):
+            Wallet.from_dict(data)
+
+    def test_from_dict_invalid_balance_type(self):
+        """Проверка ошибки при неверном типе баланса в словаре."""
+        data = {"currency_code": "USD", "balance": "one_hundred"}
+        with pytest.raises(TypeError):
+            Wallet.from_dict(data)
+
+    def test_from_dict_not_a_dict(self):
+        """Проверка ошибки при передаче не словаря."""
+        with pytest.raises(TypeError, match="wallet_dict должен быть dict"):
+            Wallet.from_dict("string")
+
+    def test_from_dict_negative_balance_handling(self):
+        """Проверка поведения при попытке создать кошелёк с отрицат.* балансом."""
+        data = {"currency_code": "USD", "balance": -10.0}
+        with pytest.raises(ValueError, match="balance.*отрицат.*"):
+            Wallet.from_dict(data)
