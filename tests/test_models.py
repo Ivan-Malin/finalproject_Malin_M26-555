@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from valutatrade_hub.core.models import User, Wallet
+from valutatrade_hub.core.models import Portfolio, User, Wallet
 
 
 # Фикстура для создания валидного пользователя
@@ -24,6 +24,52 @@ def valid_user():
 def valid_wallet():
     """Создает валидный кошелёк для тестов."""
     return Wallet(currency_code="USD", balance=100.50)
+
+
+@pytest.fixture
+def multi_wallets():
+    """Словарь с несколькими кошельками."""
+    return {
+        "USD": Wallet(currency_code="USD", balance=100.0),
+        "EUR": Wallet(currency_code="EUR", balance=50.0),
+        "BTC": Wallet(currency_code="BTC", balance=0.005),
+    }
+
+
+@pytest.fixture
+def empty_wallets():
+    """Пустой словарь кошельков."""
+    return {}
+
+
+@pytest.fixture
+def single_wallet():
+    """Словарь с одним кошельком USD."""
+    return {"USD": Wallet(currency_code="USD", balance=100.0)}
+
+
+@pytest.fixture
+def empty_portfolio(valid_user):
+    """Создает пустое портфолио."""
+    return Portfolio(user_id=valid_user.user_id, wallets={})
+
+
+@pytest.fixture
+def portfolio_with_usd(valid_user):
+    """Создает портфолио с одним кошельком USD."""
+    wallets = {"USD": Wallet(currency_code="USD", balance=100.0)}
+    return Portfolio(user_id=valid_user.user_id, wallets=wallets)
+
+
+@pytest.fixture
+def multi_currency_portfolio(valid_user):
+    """Создает портфолио с несколькими валютами."""
+    wallets = {
+        "USD": Wallet(currency_code="USD", balance=100.0),
+        "EUR": Wallet(currency_code="EUR", balance=50.0),
+        "BTC": Wallet(currency_code="BTC", balance=0.01),
+    }
+    return Portfolio(user_id=valid_user.user_id, wallets=wallets)
 
 
 class TestUserInitialization:
@@ -540,3 +586,208 @@ class TestWalletSerialization:
         data = {"currency_code": "USD", "balance": -10.0}
         with pytest.raises(ValueError, match="balance.*отрицат.*"):
             Wallet.from_dict(data)
+
+
+class TestPortfolioInitializationErrors:
+    """Тесты ошибок инициализации портфолио через strict_arg_types."""
+
+    def test_init_invalid_user_id_type(self, empty_wallets):
+        """Ошибка TypeError при передаче строки вместо int в user_id."""
+        with pytest.raises(TypeError):
+            Portfolio(user_id="not_an_int", wallets=empty_wallets)
+
+    def test_init_invalid_user_id_none(self, empty_wallets):
+        """Ошибка TypeError при передаче None в user_id."""
+        with pytest.raises(TypeError):
+            Portfolio(user_id=None, wallets=empty_wallets)
+
+    def test_init_invalid_wallets_type_list(self, valid_user):
+        """Ошибка TypeError при передаче списка вместо dict в wallets."""
+        with pytest.raises(TypeError):
+            Portfolio(user_id=1, wallets=[Wallet("USD")])
+
+    def test_init_invalid_wallets_type_none(self, valid_user):
+        """Ошибка TypeError при передаче None вместо dict в wallets."""
+        with pytest.raises(TypeError):
+            Portfolio(user_id=1, wallets=None)
+
+    def test_init_invalid_wallets_type_string(self, valid_user):
+        """Ошибка TypeError при передаче строки вместо dict в wallets."""
+        with pytest.raises(TypeError):
+            Portfolio(user_id=1, wallets="{}")
+
+    def test_init_missing_wallets_arg(self, valid_user):
+        """Ошибка TypeError при отсутствии обязательного аргумента wallets."""
+        with pytest.raises(TypeError):
+            Portfolio(user_id=1)
+
+    def test_init_missing_user_id_arg(self, single_wallet):
+        """Ошибка TypeError при отсутствии обязательного аргумента user_id."""
+        with pytest.raises(TypeError):
+            Portfolio(wallets=single_wallet)
+
+
+class TestPortfolioValidInitialization:
+    """Тесты успешной инициализации портфолио."""
+
+    def test_create_valid_portfolio_empty(self, valid_user, empty_wallets):
+        """Успешное создание портфолио без кошельков."""
+        portfolio = Portfolio(user_id=valid_user.user_id, wallets=empty_wallets)
+        assert portfolio._user_id == 1
+        assert portfolio._wallets == {}
+
+    def test_create_valid_portfolio_single(self, valid_user, single_wallet):
+        """Успешное создание портфолио с одним кошельком."""
+        portfolio = Portfolio(user_id=valid_user.user_id, wallets=single_wallet)
+        assert portfolio._user_id == 1
+        assert "USD" in portfolio._wallets
+        assert portfolio._wallets["USD"].balance == 100.0
+
+
+class TestPortfolioInitialization:
+    """Тесты инициализации портфолио."""
+
+    def test_create_valid_empty(self, valid_user):
+        """Успешное создание пустого портфолио."""
+        p = Portfolio(user_id=valid_user.user_id, wallets={})
+        assert p._user_id == 1
+        assert len(p._wallets) == 0
+
+    def test_create_valid_with_wallets(self, valid_user):
+        """Успешное создание портфолия с кошельками."""
+        w = {"USD": Wallet("USD")}
+        p = Portfolio(user_id=valid_user.user_id, wallets=w)
+        assert "USD" in p._wallets
+
+    # --- Тесты на TypeError (строгая типизация) ---
+
+    def test_init_invalid_user_id_type(self):
+        """Ошибка при неверном типе user_id."""
+        with pytest.raises(TypeError):
+            Portfolio(user_id="1", wallets={})
+
+    def test_init_invalid_wallets_type_list(self, valid_user):
+        """Ошибка при передаче списка вместо dict."""
+        with pytest.raises(TypeError):
+            Portfolio(user_id=1, wallets=[Wallet("USD")])
+
+    def test_init_invalid_wallets_type_none(self, valid_user):
+        """Ошибка при передаче None."""
+        with pytest.raises(TypeError):
+            Portfolio(user_id=1, wallets=None)
+
+    def test_init_missing_args(self):
+        """Ошибка при пропуске обязательных аргументов."""
+        with pytest.raises(TypeError):
+            Portfolio(user_id=1)
+        with pytest.raises(TypeError):
+            Portfolio(wallets={})
+
+
+class TestPortfolioAddCurrency:
+    """Тесты добавления валюты в портфолио."""
+
+    def test_add_new_currency_success(self, empty_portfolio):
+        """Успешное добавление новой валюты."""
+        wallet = empty_portfolio.add_currency("USD")
+        assert isinstance(wallet, Wallet)
+        assert wallet.currency_code == "USD"
+        assert wallet.balance == 0.0
+        assert "USD" in empty_portfolio._wallets
+
+    def test_add_duplicate_currency_raises_keyerror(self, portfolio_with_usd):
+        """Ошибка при попытке добавить существующую валюту."""
+        with pytest.raises(KeyError, match="Wallet для USD уже существует"):
+            portfolio_with_usd.add_currency("USD")
+
+    def test_add_currency_invalid_type(self, empty_portfolio):
+        """Ошибка при передаче некорректного типа валюты."""
+        with pytest.raises(TypeError):
+            empty_portfolio.add_currency(123)
+
+
+class TestPortfolioGetWallet:
+    """Тесты получения кошелька из портфолио."""
+
+    def test_get_existing_wallet(self, portfolio_with_usd):
+        """Успешное получение существующего кошелька."""
+        wallet = portfolio_with_usd.get_wallet("USD")
+        assert wallet.currency_code == "USD"
+        assert wallet.balance == 100.0
+
+    def test_get_non_existent_wallet_raises_keyerror(self, empty_portfolio):
+        """Ошибка при запросе несуществующей валюты."""
+        with pytest.raises(KeyError, match="Wallet для USD не существует"):
+            empty_portfolio.get_wallet("USD")
+
+    def test_get_wallet_invalid_type(self, empty_portfolio):
+        """Ошибка при передаче некорректного типа аргумента."""
+        with pytest.raises(TypeError):
+            empty_portfolio.get_wallet(None)
+
+
+class TestPortfolioSerialization:
+    """Тесты сериализации и десериализации портфолио."""
+
+    def test_to_dict_structure(self, multi_currency_portfolio):
+        """Проверка структуры словаря при сериализации."""
+        data = multi_currency_portfolio.to_dict()
+        assert isinstance(data, dict)
+        assert data["user_id"] == 1
+        assert "wallets" in data
+        assert "USD" in data["wallets"]
+        assert data["wallets"]["USD"]["balance"] == 100.0
+
+    def test_from_dict_success(self, valid_user):
+        """Успешная десериализация из словаря."""
+        data = {
+            "user_id": 1,
+            "wallets": {
+                "USD": {"currency_code": "USD", "balance": 100.0},
+                "EUR": {"currency_code": "EUR", "balance": 50.0},
+            },
+        }
+        portfolio = Portfolio.from_dict(data)
+        assert portfolio._user_id == 1
+        assert len(portfolio._wallets) == 2
+        assert portfolio._wallets["EUR"].balance == 50.0
+
+    def test_from_dict_invalid_type(self):
+        """Ошибка при передаче не словаря."""
+        with pytest.raises(TypeError):
+            Portfolio.from_dict("not a dict")
+
+    def test_from_dict_missing_keys(self):
+        """Ошибка при отсутствии ключей в словаре."""
+        with pytest.raises(ValueError):
+            Portfolio.from_dict({"user_id": 1})  # нет wallets
+
+        with pytest.raises(ValueError):
+            Portfolio.from_dict({"wallets": {}})  # нет user_id
+
+    def test_from_dict_invalid_wallet_data(self):
+        """Ошибка при некорректных данных внутри кошелька."""
+        data = {
+            "user_id": 1,
+            "wallets": {
+                "USD": {"invalid_key": 100.0}  # нет currency_code и balance
+            },
+        }
+        with pytest.raises(ValueError):
+            Portfolio.from_dict(data)
+
+
+class TestPortfolioProperties:
+    """Тесты свойств портфолио."""
+
+    def test_user_id_property(self, valid_user):
+        """Проверка свойства user_id."""
+        p = Portfolio(user_id=valid_user.user_id, wallets={})
+        # В текущей реализации аннотация возвращает User, но по логике это int
+        # Проверяем фактическое значение
+        assert p.user_id == 1
+
+    def test_total_value_not_implemented(self, multi_currency_portfolio):
+        """Проверка, что get_total_value пока не реализован."""
+        with pytest.raises(NotImplementedError):
+            multi_currency_portfolio.get_total_value()

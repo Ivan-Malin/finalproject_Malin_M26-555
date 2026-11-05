@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Self
 
 from valutatrade_hub.core.utils import (
+    assert_isinstance,
     assert_non_negative,
     strict_arg_types,
 )
@@ -82,12 +83,12 @@ class User:
 
     @property
     def user_id(self) -> int:
-        """Геттер для приватного поля."""
+        """ID пользователя в системе."""
         return self._user_id
 
     @property
     def username(self) -> int:
-        """Геттер для приватного поля."""
+        """Имя пользователя в системе."""
         return self._username
 
     @username.setter
@@ -102,7 +103,7 @@ class User:
 
     @property
     def registration_date(self) -> datetime:
-        """Геттер для приватного поля."""
+        """Дата регистрации пользователя в формате datetime."""
         # datetime является имутабельным, поэтому можем так передавать
         return self._registration_date
 
@@ -186,7 +187,7 @@ class Wallet:
 
     @strict_arg_types
     def __init__(self, currency_code: str, balance: float = 0.0) -> None:
-        """Инициализирует кошелёк.
+        """Инициализирует объект кошелька.
 
         Args:
             currency_code (str): код валюты (например, "USD", "BTC")
@@ -201,13 +202,13 @@ class Wallet:
 
     # Сеттер к нему не сделан, т.к. он не имеет смысла в контексте задачи
     @property
-    def currency_code(self) -> None:
-        """Геттер для приватного поля."""
+    def currency_code(self) -> str:
+        """Код валюты."""
         return self._currency_code
 
     @property
-    def balance(self) -> None:
-        """Геттер для приватного поля."""
+    def balance(self) -> float:
+        """Баланс пользователя."""
         return self._balance
 
     @balance.setter
@@ -298,6 +299,154 @@ class Wallet:
             return cls(
                 currency_code=wallet_dict["currency_code"],
                 balance=wallet_dict["balance"],
+            )
+        except (KeyError, ValueError) as e:
+            msg = f"wallet_dict имеет некорректный формат. {e}"
+            raise ValueError(msg) from e
+
+
+class Portfolio:
+    """Портфолио, что управляет всеми кошельками одного пользователя."""
+
+    @strict_arg_types
+    def __init__(
+        self,
+        user_id: int,
+        wallets: dict[str, Wallet],
+    ) -> None:
+        """Инициализирует объект портфолио.
+
+        Args:
+            user_id (int): id пользователя.
+            wallets (dict[str, Wallet]): словарь кошельков пользователя,
+                где ключ - код валюты, значение - объект Wallet.
+
+        """
+        self._user_id = user_id
+        self._wallets = wallets
+
+    @strict_arg_types
+    def add_currency(self, currency_code: str) -> Wallet:
+        """Добавляет новый кошелёк в портфель (если его ещё нет).
+
+        Args:
+            currency_code (str): код авлюты кошелька.
+
+        Returns:
+            Wallet: добавленный кошелёк.
+
+        Raises:
+            TypeError: в случае некорректных аргументов.
+            KeyError: в случае если Wallet на currency_code
+                уже существует.
+
+        """
+        if currency_code in self._wallets:
+            msg = f"Wallet для {currency_code} уже существует в Portfolio"
+            raise KeyError(msg)
+
+        result = Wallet(currency_code)
+        self._wallets[currency_code] = result
+        return result
+
+    @strict_arg_types
+    def get_wallet(self, currency_code: str) -> Wallet:
+        """Возвращает кошелёк на соотвутствующую валюту.
+
+        Args:
+            currency_code (str): код авлюты кошелька.
+
+        Returns:
+            Wallet: кошелёк для этого currency_code.
+
+        Raises:
+            TypeError: в случае некорректных аргументов.
+            KeyError: в случае если Wallet на currency_code
+                не существует.
+
+        """
+        if currency_code not in self._wallets:
+            msg = f"Wallet для {currency_code} не существует в Portfolio"
+            raise KeyError(msg)
+
+        return self._wallets[currency_code]
+
+    @strict_arg_types
+    def get_total_value(self, base_currency: str = "USD") -> float:
+        """Возвращает общую стоимость всех валют пользователя.
+
+        Стоимость указана в базовой валюте.
+
+        Args:
+            base_currency (str, optional): базовая валюта.
+                По умолчанию 'USD'.
+
+        Returns:
+            float: стоимость в указанной базовой валюте.
+
+        """
+        msg = "сделать get_total_value"
+        raise NotImplementedError(msg)
+
+    # Учитывая, что нигде до этого регистр пользователей
+    # не упоминался в этом задании, то было принято решение
+    # считать вывод поля user опечаткой и выводить именно user_id
+    # нейминг так же был исправлен соответственно
+    @property
+    def user_id(self) -> User:
+        """Пользователь данного портфолио."""
+        return self._user_id
+
+    # Самый простой способ для сериализации json
+    def to_dict(self) -> dict:
+        """Возвращает объект в виде словаря для сериализации.
+
+        Returns:
+            dict: словарь для сериализации
+
+        """
+        return {
+            "user_id": self.user_id,
+            "wallets": {
+                currency_code: wallet.to_dict()
+                for currency_code, wallet in self._wallets.items()
+            },
+        }
+
+    @classmethod
+    @strict_arg_types
+    def from_dict(cls, portfolio_dict: dict) -> Self:
+        """Инициализирует объект на основе словаря, полученного из json.
+
+        Args:
+            portfolio_dict (dict): словарь формата
+            {
+                "user_id": 1,
+                "wallets": {
+                    "USD": {"balance": 1500.0},
+                    "BTC": {"balance": 0.05},
+                    "EUR": {"balance": 200.0}
+                }
+            }
+
+        Raises:
+            TypeError: в случае если аргумент не словарь.
+            ValueError: в случае некорректного словаря.
+
+        Returns:
+            Self: User
+
+        """
+        try:
+            user_id = portfolio_dict["user_id"]
+            assert_isinstance(user_id, "user_id", int)
+
+            return cls(
+                user_id=user_id,
+                wallets={
+                    currency_code: Wallet.from_dict(wallet_dict)
+                    for currency_code, wallet_dict in portfolio_dict["wallets"].items()
+                },
             )
         except (KeyError, ValueError) as e:
             msg = f"wallet_dict имеет некорректный формат. {e}"
