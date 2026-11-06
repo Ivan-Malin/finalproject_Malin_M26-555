@@ -371,6 +371,7 @@ class Portfolio:
 
         return self._wallets[currency_code]
 
+    # TOD - реализовать
     @strict_arg_types
     def get_total_value(self, base_currency: str = "USD") -> float:
         """Возвращает общую стоимость всех валют пользователя.
